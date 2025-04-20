@@ -4,8 +4,11 @@
  *
  * @package CaptchaPlus
  * @author ATP
- * @version 1.2.0
+ * @version 1.2.1
  * @link https://atpx.com
+ * 
+ * Version 1.2.1 (2025-04-21)
+ * 修复Content-Type问题和安全性增强
  * 
  * Version 1.2.0 (2023-01-22)
  * 添加 Cloudflare Turnstile 验证
@@ -33,6 +36,10 @@ use Widget\Options;
 
 class CaptchaPlus_Plugin implements PluginInterface
 {
+    // 添加IP防刷限制缓存
+    private static $cache_dir = __TYPECHO_ROOT_DIR__ . '/usr/plugins/CaptchaPlus/cache/';
+    private static $ip_limit = 5; // 每分钟最大评论数
+    private static $ip_timeout = 60; // 限制时间(秒)
 
 	/**
 	 * 激活插件方法,如果激活失败,直接抛出异常
@@ -40,6 +47,13 @@ class CaptchaPlus_Plugin implements PluginInterface
 	public static function activate()
 	{
 		\Typecho\Plugin::factory('Widget_Feedback')->comment = __CLASS__ . '::filter';
+		
+		// 创建缓存目录
+		if (!file_exists(self::$cache_dir)) {
+		    mkdir(self::$cache_dir, 0755, true);
+		}
+		
+		return _t('插件已启用');
 	}
 
 	/**
@@ -70,6 +84,9 @@ class CaptchaPlus_Plugin implements PluginInterface
 
 		$widget_size = new Radio('widget_size', array("normal" => "常规", "compact" => "紧凑"), "normal", _t('样式'), _t('设置验证工具布局样式，默认为常规'));
 		$form->addInput($widget_size);
+		
+		$rate_limit = new Radio('rate_limit', array("0" => "关闭", "1" => "开启"), "1", _t('IP频率限制'), _t('开启后限制同一IP在短时间内的评论次数，有助于防止机器人刷评论'));
+		$form->addInput($rate_limit);
 
 		$opt_noru = new Radio(
 			'opt_noru',
@@ -124,6 +141,9 @@ class CaptchaPlus_Plugin implements PluginInterface
 			_t('多条词汇请用换行符隔开<br />注意：如果词汇同时出现于禁止词汇，则执行禁止词汇操作')
 		);
 		$form->addInput($words_chk);
+		
+		$log_enable = new Radio('log_enable', array("0" => "关闭", "1" => "开启"), "1", _t('启用日志'), _t('记录验证失败和可疑评论的详细信息，便于排查问题'));
+		$form->addInput($log_enable);
 	}
 
 	/**
@@ -155,8 +175,86 @@ class CaptchaPlus_Plugin implements PluginInterface
 			}
 			echo $script;
 		} else {
-			// throw new Exception(_t('Error, No hCaptcha Site/Secret Keys.'));
+			echo '<div style="color:red;margin:10px 0;">验证码未配置，请联系站长</div>';
 		}
+	}
+	
+	/**
+	 * 记录日志
+	 * 
+	 * @param string $message 日志信息
+	 * @param string $type 日志类型
+	 */
+	private static function log($message, $type = 'info')
+	{
+	    $filter_set = Options::alloc()->plugin('CaptchaPlus');
+	    if (empty($filter_set->log_enable) || $filter_set->log_enable != '1') {
+	        return;
+	    }
+	    
+	    $log_file = __TYPECHO_ROOT_DIR__ . '/usr/plugins/CaptchaPlus/captcha.log';
+	    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown';
+	    $ua = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : 'unknown';
+	    
+	    $log_message = date('[Y-m-d H:i:s]') . " [{$type}] [{$ip}] {$message} | UA: {$ua}\n";
+	    
+	    @error_log($log_message, 3, $log_file);
+	}
+	
+	/**
+	 * 检查IP评论频率限制
+	 * 
+	 * @return bool 是否允许评论
+	 */
+	private static function checkIpLimit()
+	{
+	    $filter_set = Options::alloc()->plugin('CaptchaPlus');
+	    if (empty($filter_set->rate_limit) || $filter_set->rate_limit != '1') {
+	        return true;
+	    }
+	    
+	    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown';
+	    if ($ip == 'unknown') {
+	        return true;
+	    }
+	    
+	    $ip_md5 = md5($ip);
+	    $cache_file = self::$cache_dir . $ip_md5 . '.json';
+	    
+	    $current_time = time();
+	    $data = array(
+	        'ip' => $ip,
+	        'count' => 1,
+	        'first_time' => $current_time,
+	        'last_time' => $current_time
+	    );
+	    
+	    if (file_exists($cache_file)) {
+	        $file_content = @file_get_contents($cache_file);
+	        if ($file_content !== false) {
+	            $old_data = @json_decode($file_content, true);
+	            if (is_array($old_data)) {
+	                // 如果时间间隔超过限制，重置计数
+	                if ($current_time - $old_data['first_time'] > self::$ip_timeout) {
+	                    $data['count'] = 1;
+	                    $data['first_time'] = $current_time;
+	                } else {
+	                    $data['count'] = $old_data['count'] + 1;
+	                    $data['first_time'] = $old_data['first_time'];
+	                }
+	                
+	                // 检查是否超过限制
+	                if ($data['count'] > self::$ip_limit) {
+	                    self::log("IP评论频率超限: {$ip}, 计数: {$data['count']}", 'limit');
+	                    return false;
+	                }
+	            }
+	        }
+	    }
+	    
+	    // 更新缓存
+	    @file_put_contents($cache_file, json_encode($data));
+	    return true;
 	}
 
 	/**
@@ -170,27 +268,54 @@ class CaptchaPlus_Plugin implements PluginInterface
 		$user = Widget::widget('Widget_User');
 		$captcha_choose = $filter_set->captcha_choose;
 		$secret_key = $filter_set->secret_key;
-		$post_token = "";
-		if ($captcha_choose == "hcaptcha") {
-			$post_token = $_POST['h-captcha-response'];
-			$url_path = "https://hcaptcha.com/siteverify";
-		} else {
-			$post_token = $_POST['cf-turnstile-response'];
-			$url_path = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-		}
+		
+		// 检查IP限制
+        if (!self::checkIpLimit()) {
+            Cookie::set('__typecho_remember_text', $comment['text']);
+            throw new Exception(_t('评论提交过于频繁，请稍后再试'));
+        }
+		
+		// 管理员跳过验证
 		if ($user->hasLogin() && $user->pass('administrator', true)) {
 			return $comment;
-		} elseif (isset($post_token)) {
+		}
+		
+		// 确定验证服务和token
+		if ($captcha_choose == "hcaptcha") {
+			$post_token = isset($_POST['h-captcha-response']) ? $_POST['h-captcha-response'] : '';
+			$url_path = "https://hcaptcha.com/siteverify";
+		} else {
+			$post_token = isset($_POST['cf-turnstile-response']) ? $_POST['cf-turnstile-response'] : '';
+			$url_path = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+		}
+		
+		// 验证token是否存在且非空
+		if (!empty($post_token)) {
 			$postdata = array('secret' => $secret_key, 'response' => $post_token);
 			$options = array(
 				'http' => array(
 					'method' => 'POST',
-					'content' => http_build_query($postdata)
+					'header' => 'Content-Type: application/x-www-form-urlencoded',
+					'content' => http_build_query($postdata),
+					'timeout' => 10
 				)
 			);
+			
 			$context = stream_context_create($options);
-			$response = file_get_contents($url_path, false, $context);
-			$response_data = json_decode($response);
+			
+			// 错误处理
+			$response = @file_get_contents($url_path, false, $context);
+			if ($response === false) {
+			    self::log("验证服务连接失败: {$url_path}", 'error');
+				throw new Exception(_t('无法连接验证服务，请稍后再试。'));
+			}
+			
+			$response_data = @json_decode($response);
+			if (!is_object($response_data)) {
+			    self::log("验证响应解析失败: {$response}", 'error');
+				throw new Exception(_t('验证响应无效，请刷新页面重试。'));
+			}
+			
 			if ($response_data->success == true) {
 				$opt = "none";
 				$error = "";
@@ -199,6 +324,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 					if (preg_match("/([\x{0400}-\x{04FF}]|[\x{0500}-\x{052F}]|[\x{2DE0}-\x{2DFF}]|[\x{A640}-\x{A69F}]|[\x{1C80}-\x{1C8F}])/u", $comment['text']) > 0) {
 						$error = "Error.";
 						$opt = $filter_set->opt_noru;
+						self::log("评论包含俄文: " . mb_substr($comment['text'], 0, 50, 'UTF-8') . "...", 'filter');
 					}
 				}
 				// 非中文评论处理
@@ -206,6 +332,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 					if (preg_match("/[\x{4e00}-\x{9fa5}]/u", $comment['text']) == 0) {
 						$error = "At least one Chinese character is required.";
 						$opt = $filter_set->opt_nocn;
+						self::log("评论不含中文: " . mb_substr($comment['text'], 0, 50, 'UTF-8') . "...", 'filter');
 					}
 				}
 				// 禁止词汇处理
@@ -213,6 +340,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 					if (CaptchaPlus_Plugin::check_in($filter_set->words_ban, $comment['text'])) {
 						$error = "More friendly, plz :)";
 						$opt = $filter_set->opt_ban;
+						self::log("评论包含禁止词汇", 'filter');
 					}
 				}
 				// 敏感词汇处理
@@ -220,6 +348,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 					if (CaptchaPlus_Plugin::check_in($filter_set->words_chk, $comment['text'])) {
 						$error = "Error.";
 						$opt = $filter_set->opt_chk;
+						self::log("评论包含敏感词汇", 'filter');
 					}
 				}
 				// 执行操作
@@ -234,10 +363,13 @@ class CaptchaPlus_Plugin implements PluginInterface
 				Cookie::delete('__typecho_remember_text');
 				return $comment;
 			} else {
-				throw new Exception(_t('Captcha verification failed. Please try again.'));
+			    $error_codes = isset($response_data->{'error-codes'}) ? json_encode($response_data->{'error-codes'}) : '';
+			    self::log("验证失败: {$error_codes}", 'verify');
+				throw new Exception(_t('验证码验证失败，请刷新页面重试。'));
 			}
 		} else {
-			throw new Exception(_t('Could not connect to the service. Please check your internet connection and reload to get a captcha challenge.'));
+		    self::log("验证令牌为空", 'verify');
+			throw new Exception(_t('请完成验证码验证后再提交评论。'));
 		}
 	}
 
@@ -252,7 +384,11 @@ class CaptchaPlus_Plugin implements PluginInterface
 			return false;
 		}
 		foreach ($words as $word) {
-			if (false !== strpos($str, trim($word))) {
+		    $word = trim($word);
+		    if (empty($word)) {
+		        continue;
+		    }
+			if (false !== strpos($str, $word)) {
 				return true;
 			}
 		}
