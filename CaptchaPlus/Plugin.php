@@ -36,23 +36,12 @@ use Widget\Options;
 
 class CaptchaPlus_Plugin implements PluginInterface
 {
-    // 添加IP防刷限制缓存
-    private static $cache_dir = __TYPECHO_ROOT_DIR__ . '/usr/plugins/CaptchaPlus/cache/';
-    private static $ip_limit = 5; // 每分钟最大评论数
-    private static $ip_timeout = 60; // 限制时间(秒)
-
 	/**
 	 * 激活插件方法,如果激活失败,直接抛出异常
 	 */
 	public static function activate()
 	{
 		\Typecho\Plugin::factory('Widget_Feedback')->comment = __CLASS__ . '::filter';
-		
-		// 创建缓存目录
-		if (!file_exists(self::$cache_dir)) {
-		    mkdir(self::$cache_dir, 0755, true);
-		}
-		
 		return _t('插件已启用');
 	}
 
@@ -84,9 +73,6 @@ class CaptchaPlus_Plugin implements PluginInterface
 
 		$widget_size = new Radio('widget_size', array("normal" => "常规", "compact" => "紧凑"), "normal", _t('样式'), _t('设置验证工具布局样式，默认为常规'));
 		$form->addInput($widget_size);
-		
-		$rate_limit = new Radio('rate_limit', array("0" => "关闭", "1" => "开启"), "1", _t('IP频率限制'), _t('开启后限制同一IP在短时间内的评论次数，有助于防止机器人刷评论'));
-		$form->addInput($rate_limit);
 
 		$opt_noru = new Radio(
 			'opt_noru',
@@ -200,62 +186,6 @@ class CaptchaPlus_Plugin implements PluginInterface
 	    
 	    @error_log($log_message, 3, $log_file);
 	}
-	
-	/**
-	 * 检查IP评论频率限制
-	 * 
-	 * @return bool 是否允许评论
-	 */
-	private static function checkIpLimit()
-	{
-	    $filter_set = Options::alloc()->plugin('CaptchaPlus');
-	    if (empty($filter_set->rate_limit) || $filter_set->rate_limit != '1') {
-	        return true;
-	    }
-	    
-	    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown';
-	    if ($ip == 'unknown') {
-	        return true;
-	    }
-	    
-	    $ip_md5 = md5($ip);
-	    $cache_file = self::$cache_dir . $ip_md5 . '.json';
-	    
-	    $current_time = time();
-	    $data = array(
-	        'ip' => $ip,
-	        'count' => 1,
-	        'first_time' => $current_time,
-	        'last_time' => $current_time
-	    );
-	    
-	    if (file_exists($cache_file)) {
-	        $file_content = @file_get_contents($cache_file);
-	        if ($file_content !== false) {
-	            $old_data = @json_decode($file_content, true);
-	            if (is_array($old_data)) {
-	                // 如果时间间隔超过限制，重置计数
-	                if ($current_time - $old_data['first_time'] > self::$ip_timeout) {
-	                    $data['count'] = 1;
-	                    $data['first_time'] = $current_time;
-	                } else {
-	                    $data['count'] = $old_data['count'] + 1;
-	                    $data['first_time'] = $old_data['first_time'];
-	                }
-	                
-	                // 检查是否超过限制
-	                if ($data['count'] > self::$ip_limit) {
-	                    self::log("IP评论频率超限: {$ip}, 计数: {$data['count']}", 'limit');
-	                    return false;
-	                }
-	            }
-	        }
-	    }
-	    
-	    // 更新缓存
-	    @file_put_contents($cache_file, json_encode($data));
-	    return true;
-	}
 
 	/**
 	 * 插件实现方法
@@ -268,12 +198,6 @@ class CaptchaPlus_Plugin implements PluginInterface
 		$user = Widget::widget('Widget_User');
 		$captcha_choose = $filter_set->captcha_choose;
 		$secret_key = $filter_set->secret_key;
-		
-		// 检查IP限制
-        if (!self::checkIpLimit()) {
-            Cookie::set('__typecho_remember_text', $comment['text']);
-            throw new Exception(_t('评论提交过于频繁，请稍后再试'));
-        }
 		
 		// 管理员跳过验证
 		if ($user->hasLogin() && $user->pass('administrator', true)) {
