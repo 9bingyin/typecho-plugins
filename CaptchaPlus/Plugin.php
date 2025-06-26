@@ -1,11 +1,14 @@
 <?php
 /**
- * 评论设置 hCaptcha / Turnstile 验证并通过规则过滤
+ * 评论设置 hCaptcha / Turnstile / Cap 验证并通过规则过滤
  *
  * @package CaptchaPlus
  * @author ATP
- * @version 1.2.1
+ * @version 1.3.0
  * @link https://atpx.com
+ * 
+ * Version 1.3.0 (2025-06-27)
+ * 添加 Cap 验证支持
  * 
  * Version 1.2.1 (2025-04-21)
  * 修复Content-Type问题和安全性增强
@@ -59,14 +62,20 @@ class CaptchaPlus_Plugin implements PluginInterface
 	 */
 	public static function config(Form $form)
 	{
-		$captcha_choose = new Radio('captcha_choose', array("hcaptcha" => "hCaptcha", "turnstile" => "Turnstile"), "hcaptcha", _t('验证工具'), _t('选择使用 hCpatcha 或者 Cloudflare Turnstile 验证'));
+		$captcha_choose = new Radio('captcha_choose', array("hcaptcha" => "hCaptcha", "turnstile" => "Turnstile", "cap" => "Cap"), "hcaptcha", _t('验证工具'), _t('选择使用 hCpatcha、Cloudflare Turnstile 或者 Cap 验证'));
 		$form->addInput($captcha_choose);
 
-		$site_key = new Text('site_key', NULL, '', _t('Site Key'), _t('需要注册 <a href="https://www.hcaptcha.com/" target="_blank">hCaptcha</a> 或者 <a href="https://dash.cloudflare.com/sign-up" target="_blank">Cloudflare</a> 账号以获取 <b>site key</b> 和 <b>secret key</b>'));
+		$site_key = new Text('site_key', NULL, '', _t('Site Key'), _t('需要注册 <a href="https://www.hcaptcha.com/" target="_blank">hCaptcha</a>、<a href="https://dash.cloudflare.com/sign-up" target="_blank">Cloudflare</a> 账号或配置 Cap Standalone 服务以获取 <b>site key</b> 和 <b>secret key</b>'));
 		$form->addInput($site_key);
 
 		$secret_key = new Text('secret_key', NULL, '', _t('Secret Key'), _t(''));
 		$form->addInput($secret_key);
+
+		$cap_endpoint = new Text('cap_endpoint', NULL, '', _t('Cap API 端点'), _t('仅当使用 Cap 验证时需要填写，格式：https://your-cap-server.com/ （注意最后的斜杠）'));
+		$form->addInput($cap_endpoint);
+
+		$cap_use_self_hosted = new Radio('cap_use_self_hosted', array("0" => "使用 CDN", "1" => "使用自托管资源"), "0", _t('Cap 资源加载'), _t('选择使用 CDN 还是自托管的 Cap 服务器资源（需要在 Cap 服务器上启用 Asset server）'));
+		$form->addInput($cap_use_self_hosted);
 
 		$widget_theme = new Radio('widget_theme', array("light" => "浅色", "dark" => "深色"), "light", _t('主题'), _t('设置验证工具主题颜色，默认为浅色'));
 		$form->addInput($widget_theme);
@@ -142,7 +151,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 	}
 
 	/**
-	 * 显示 hCaptcha / Turnstile
+	 * 显示 hCaptcha / Turnstile / Cap
 	 */
 	public static function output()
 	{
@@ -150,14 +159,38 @@ class CaptchaPlus_Plugin implements PluginInterface
 		$captcha_choose = $filter_set->captcha_choose;
 		$site_key = $filter_set->site_key;
 		$secret_key = $filter_set->secret_key;
+		$cap_endpoint = $filter_set->cap_endpoint;
+		$cap_use_self_hosted = $filter_set->cap_use_self_hosted;
 		$widget_theme = $filter_set->widget_theme;
 		$widget_size = $filter_set->widget_size;
 		$script = "";
 		if ($site_key != "" && $secret_key != "") {
 			if ($captcha_choose == "hcaptcha") {
 				$script = '<script src="https://hcaptcha.com/1/api.js" async defer></script><div class="h-captcha" data-sitekey="' . $site_key . '" data-theme="' . $widget_theme . '" data-size="' . $widget_size . '"></div>';
-			} else {
+			} elseif ($captcha_choose == "turnstile") {
 				$script = '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><div class="cf-turnstile" data-sitekey="' . $site_key . '" data-theme="' . $widget_theme . '" data-size="' . $widget_size . '"></div>';
+			} else {
+				// Cap 验证
+				if (!empty($cap_endpoint)) {
+					$cap_api_endpoint = rtrim($cap_endpoint, '/') . '/' . $site_key . '/';
+					
+					// 根据配置选择资源加载方式
+					if ($cap_use_self_hosted == "1") {
+						// 使用自托管资源
+						$widget_script_url = rtrim($cap_endpoint, '/') . '/assets/widget.js';
+						$wasm_url = rtrim($cap_endpoint, '/') . '/assets/cap_wasm_bg.wasm';
+						$script = '<script>window.CAP_CUSTOM_WASM_URL = "' . $wasm_url . '";</script>';
+						$script .= '<script src="' . $widget_script_url . '" async defer></script>';
+					} else {
+						// 使用 CDN 资源
+						$script = '<script src="https://cdn.jsdelivr.net/npm/@cap.js/widget" async defer></script>';
+					}
+					
+					$script .= '<cap-widget data-cap-api-endpoint="' . $cap_api_endpoint . '" data-cap-hidden-field-name="cap-token"></cap-widget>';
+				} else {
+					echo '<div style="color:red;margin:10px 0;">Cap API 端点未配置，请联系站长</div>';
+					return;
+				}
 			}
 			echo $script;
 		} else {
@@ -198,6 +231,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 		$user = Widget::widget('Widget_User');
 		$captcha_choose = $filter_set->captcha_choose;
 		$secret_key = $filter_set->secret_key;
+		$cap_endpoint = $filter_set->cap_endpoint;
 		
 		// 管理员跳过验证
 		if ($user->hasLogin() && $user->pass('administrator', true)) {
@@ -208,19 +242,38 @@ class CaptchaPlus_Plugin implements PluginInterface
 		if ($captcha_choose == "hcaptcha") {
 			$post_token = isset($_POST['h-captcha-response']) ? $_POST['h-captcha-response'] : '';
 			$url_path = "https://hcaptcha.com/siteverify";
-		} else {
+		} elseif ($captcha_choose == "turnstile") {
 			$post_token = isset($_POST['cf-turnstile-response']) ? $_POST['cf-turnstile-response'] : '';
 			$url_path = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+		} else {
+			// Cap 验证
+			$post_token = isset($_POST['cap-token']) ? $_POST['cap-token'] : '';
+			if (empty($cap_endpoint)) {
+				self::log("Cap API 端点未配置", 'error');
+				throw new Exception(_t('验证码配置错误，请联系站长。'));
+			}
+			$site_key = $filter_set->site_key;
+			$url_path = rtrim($cap_endpoint, '/') . '/' . $site_key . '/siteverify';
 		}
 		
 		// 验证token是否存在且非空
 		if (!empty($post_token)) {
 			$postdata = array('secret' => $secret_key, 'response' => $post_token);
+			
+			// 为 Cap 验证设置正确的 Content-Type
+			$content_type = ($captcha_choose == "cap") ? 
+				'Content-Type: application/json' : 
+				'Content-Type: application/x-www-form-urlencoded';
+			
+			$content = ($captcha_choose == "cap") ? 
+				json_encode($postdata) : 
+				http_build_query($postdata);
+				
 			$options = array(
 				'http' => array(
 					'method' => 'POST',
-					'header' => 'Content-Type: application/x-www-form-urlencoded',
-					'content' => http_build_query($postdata),
+					'header' => $content_type,
+					'content' => $content,
 					'timeout' => 10
 				)
 			);
