@@ -178,9 +178,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 					if ($cap_use_self_hosted == "1") {
 						// 使用自托管资源
 						$widget_script_url = rtrim($cap_endpoint, '/') . '/assets/widget.js';
-						$wasm_url = rtrim($cap_endpoint, '/') . '/assets/cap_wasm_bg.wasm';
-						$script = '<script>window.CAP_CUSTOM_WASM_URL = "' . $wasm_url . '";</script>';
-						$script .= '<script src="' . $widget_script_url . '" async defer></script>';
+						$script = '<script src="' . $widget_script_url . '" async defer></script>';
 					} else {
 						// 使用 CDN 资源
 						$script = '<script src="https://cdn.jsdelivr.net/npm/@cap.js/widget" async defer></script>';
