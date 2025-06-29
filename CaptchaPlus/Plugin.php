@@ -186,7 +186,7 @@ class CaptchaPlus_Plugin implements PluginInterface
 						$script = '<script src="https://cdn.jsdelivr.net/npm/@cap.js/widget" async defer></script>';
 					}
 					
-					$script .= '<cap-widget data-cap-api-endpoint="' . $cap_api_endpoint . '" data-cap-hidden-field-name="cap-token"></cap-widget>';
+					$script .= '<cap-widget data-cap-api-endpoint="' . $cap_api_endpoint . '" data-cap-hidden-field-name="cap-token" data-cap-i18n-verifying-label="验证中..." data-cap-i18n-initial-state="我是人类" data-cap-i18n-solved-label="验证通过" data-cap-i18n-error-label="验证失败"></cap-widget>';
 				} else {
 					echo '<div style="color:red;margin:10px 0;">Cap API 端点未配置，请联系站长</div>';
 					return;
